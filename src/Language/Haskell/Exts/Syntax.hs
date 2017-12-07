@@ -177,6 +177,7 @@ data Op l
 data CName l
     = VarName l (Name l) -- ^ name of a method or field
     | ConName l (Name l) -- ^ name of a data constructor
+    | AssocTyName l (Name l)
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | A complete Haskell source module.
@@ -1129,8 +1130,11 @@ instance Annotated Op where
 instance Annotated CName where
     ann (VarName l _) = l
     ann (ConName l _) = l
+    ann (AssocTyName l _) = l
+
     amap f (VarName l n) = VarName (f l) n
     amap f (ConName l n) = ConName (f l) n
+    amap f (AssocTyName l n) = AssocTyName (f l) n
 
 instance Annotated Module where
     ann (Module l _ _ _ _)            = l

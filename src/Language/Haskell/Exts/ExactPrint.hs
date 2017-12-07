@@ -342,6 +342,7 @@ instance ExactP CName where
   exactP cn = case cn of
     VarName _ n -> exactP n
     ConName _ n -> exactP n
+    AssocTyName l n -> printStringAt (pos l) "type" >> exactP n
 
 instance ExactP Namespace where
   exactP ns = case ns of

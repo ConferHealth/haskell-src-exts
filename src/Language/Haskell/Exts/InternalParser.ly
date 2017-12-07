@@ -512,6 +512,7 @@ Requires the PackageImports extension enabled.
 > cname :: { CName L }
 >       :  var                                  { VarName (ann $1) $1 }
 >       |  con                                  { ConName (ann $1) $1 }
+>       |  'type' con                           { AssocTyName (ann $2) $2 }
 
 -----------------------------------------------------------------------------
 Fixity Declarations

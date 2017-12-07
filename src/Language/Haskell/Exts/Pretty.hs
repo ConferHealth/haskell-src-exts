@@ -1266,8 +1266,9 @@ instance  Pretty (IPBind l) where
                 myFsep [pretty ipname, equals, pretty exp]
 
 instance  Pretty (CName l) where
-        pretty (VarName _ n) = pretty n
-        pretty (ConName _ n) = pretty n
+        pretty (VarName _ n)     = pretty n
+        pretty (ConName _ n)     = pretty n
+        pretty (AssocTyName _ n) = text "type" <> pretty n
 
 instance Pretty (SpecialCon l) where
         pretty (UnitCon {})         = text "()"
