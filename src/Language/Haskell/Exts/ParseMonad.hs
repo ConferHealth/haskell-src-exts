@@ -45,8 +45,9 @@ import Language.Haskell.Exts.Extension -- (Extension, impliesExts, haskell2010)
 import Data.List (intercalate)
 import Control.Applicative
 import Control.Monad (when, liftM, ap)
-import Data.Monoid
--- To avoid import warnings for Control.Applicative and Data.Monoid
+import Data.Monoid hiding ((<>))
+import Data.Semigroup (Semigroup(..))
+-- To avoid import warnings for Control.Applicative, Data.Monoid, and Data.Semigroup
 import Prelude
 
 -- | Class providing function for parsing at many different types.
@@ -98,12 +99,14 @@ instance Monad ParseResult where
   ParseOk x           >>= f = f x
   ParseFailed loc msg >>= _ = ParseFailed loc msg
 
-instance Monoid m => Monoid (ParseResult m) where
-  mempty = ParseOk mempty
-  ParseOk x `mappend` ParseOk y = ParseOk $ x `mappend` y
-  ParseOk _ `mappend` err       = err
-  err       `mappend` _         = err -- left-biased
+instance Semigroup m => Semigroup (ParseResult m) where
+ ParseOk x <> ParseOk y = ParseOk $ x <> y
+ ParseOk _ <> err       = err
+ err       <> _         = err -- left-biased
 
+instance ( Monoid m , Semigroup m) => Monoid (ParseResult m) where
+  mempty = ParseOk mempty
+  mappend = (<>)
 
 -- internal version
 data ParseStatus a = Ok ParseState a | Failed SrcLoc String

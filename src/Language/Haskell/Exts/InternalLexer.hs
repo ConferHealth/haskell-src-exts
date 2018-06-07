@@ -153,7 +153,11 @@ data Token
         | MINIMAL
         | NO_OVERLAP
         | OVERLAP
+        | OVERLAPPING
+        | OVERLAPPABLE
+        | OVERLAPS
         | INCOHERENT
+        | COMPLETE
 
 -- Reserved Ids
 
@@ -191,6 +195,8 @@ data Token
         | KW_Where
         | KW_Qualified
         | KW_Pattern
+        | KW_Stock
+        | KW_Anyclass
 
                 -- FFI
         | KW_Foreign
@@ -289,6 +295,8 @@ reserved_ids = [
  ( "where",     (KW_Where,      Nothing) ),
  ( "role",      (KW_Role,       Just (Any [RoleAnnotations]))),
  ( "pattern",   (KW_Pattern,    Just (Any [PatternSynonyms]))),
+ ( "stock",     (KW_Stock,      Nothing)),
+ ( "anyclass",  (KW_Anyclass,   Nothing)),
 
 -- FFI
  ( "foreign",   (KW_Foreign,    Just (Any [ForeignFunctionInterface])) )
@@ -338,7 +346,11 @@ pragmas = [
  ( "minimal",           MINIMAL         ),
  ( "no_overlap",        NO_OVERLAP      ),
  ( "overlap",           OVERLAP         ),
+ ( "overlaps",          OVERLAPS        ),
+ ( "overlapping",       OVERLAPPING     ),
+ ( "overlappable",      OVERLAPPABLE    ),
  ( "incoherent",        INCOHERENT      ),
+ ( "complete",          COMPLETE      ),
  ( "options",           OPTIONS undefined ) -- we'll tweak it before use - promise!
 -- ( "cfiles",            CFILES  undefined ), -- same here...
 -- ( "include",           INCLUDE undefined )  -- ...and here!
@@ -728,9 +740,9 @@ lexStdToken = do
                         return XStdTagOpen
         -- end hsx
 
-        '(':'#':c:_ | UnboxedTuples `elem` exts && not (isHSymbol c) -> discard 2 >> return LeftHashParen
+        '(':'#':c:_ | unboxed exts && not (isHSymbol c) -> discard 2 >> return LeftHashParen
 
-        '#':')':_ | UnboxedTuples `elem` exts -> discard 2 >> return RightHashParen
+        '#':')':_   | unboxed exts -> discard 2 >> return RightHashParen
 
         -- pragmas
 
@@ -875,6 +887,9 @@ lexStdToken = do
                   _ -> do str <- lexWhile (not . (`elem` "\\|\n"))
                           rest <- lexQQBody
                           return (str++rest)
+
+unboxed :: [KnownExtension] -> Bool
+unboxed exts = UnboxedSums `elem` exts || UnboxedTuples `elem` exts
 
 -- Underscores are used in some pragmas. Options pragmas are a special case
 -- with our representation: the thing after the underscore is a parameter.
@@ -1375,7 +1390,11 @@ showToken t = case t of
   MINIMAL           -> "{-# MINIMAL"
   NO_OVERLAP        -> "{-# NO_OVERLAP"
   OVERLAP           -> "{-# OVERLAP"
+  OVERLAPPING       -> "{-# OVERLAPPING"
+  OVERLAPPABLE      -> "{-# OVERLAPPABLE"
+  OVERLAPS          -> "{-# OVERLAPS"
   INCOHERENT        -> "{-# INCOHERENT"
+  COMPLETE          -> "{-# COMPLETE"
   KW_As         -> "as"
   KW_By         -> "by"
   KW_Case       -> "case"
@@ -1425,5 +1444,7 @@ showToken t = case t of
   KW_CApi       -> "capi"
   KW_Role       -> "role"
   KW_Pattern    -> "pattern"
+  KW_Stock      -> "stock"
+  KW_Anyclass   -> "anyclass"
 
   EOF           -> "EOF"

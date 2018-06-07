@@ -1,4 +1,5 @@
 > {
+> {-# LANGUAGE CPP #-}
 > {-# OPTIONS_HADDOCK hide #-}
 > -----------------------------------------------------------------------------
 > -- |
@@ -40,6 +41,9 @@
 > import Control.Monad ( liftM, (<=<), when )
 > import Control.Applicative ( (<$>) )
 > import Data.Maybe
+> #if MIN_VERSION_base(4,11,0)
+> import Prelude hiding ((<>))
+> #endif
 import Debug.Trace (trace)
 
 > }
@@ -254,6 +258,8 @@ Reserved Ids
 >       'qualified'     { Loc $$ KW_Qualified }
 >       'role'          { Loc $$ KW_Role }
 >       'pattern'       { Loc $$ KW_Pattern }
+>       'stock'         { Loc $$ KW_Stock }    -- for DerivingStrategies extension
+>       'anyclass'      { Loc $$ KW_Anyclass } -- for DerivingStrategies extension
 
 Pragmas
 
@@ -278,7 +284,11 @@ Pragmas
 >       '{-# MINIMAL'           { Loc $$ MINIMAL }
 >       '{-# NO_OVERLAP'        { Loc $$ NO_OVERLAP }
 >       '{-# OVERLAP'           { Loc $$ OVERLAP }
+>       '{-# OVERLAPS'          { Loc $$ OVERLAPS }
+>       '{-# OVERLAPPING'       { Loc $$ OVERLAPPING }
+>       '{-# OVERLAPPABLE'      { Loc $$ OVERLAPPABLE }
 >       '{-# INCOHERENT'        { Loc $$ INCOHERENT }
+>       '{-# COMPLETE'          { Loc $$ COMPLETE }
 >       '#-}'                   { Loc $$ PragmaEnd }      -- 139
 
 
@@ -297,7 +307,7 @@ Pragmas
 > %partial ngparsePragmasAndModuleHead moduletophead
 > %partial ngparsePragmasAndModuleName moduletopname
 > %tokentype { Loc Token }
-> %expect 10
+> %expect 13
 > %%
 
 -----------------------------------------------------------------------------
@@ -435,7 +445,7 @@ The Export List
 >
 > qcname :: { QName L }
 >        : qvar                                 { $1 }
->        | qconid                               { $1 }
+>        | qcon                                 { $1 }
 
 -----------------------------------------------------------------------------
 Import Declarations
@@ -583,22 +593,23 @@ Here there is no special keyword so we must do the check.
 >                        checkEnabled TypeFamilies ;
 >                        let {l = nIS $1 <++> ann $5 <** [$1,$2,$4]};
 >                        return (TypeInsDecl l $3 $5) } }
->       | data_or_newtype ctype constrs0 deriving
+>       | data_or_newtype ctype constrs0 maybe_derivings
 >                {% do { (cs,dh) <- checkDataHeader $2;
 >                        let { (qds,ss,minf) = $3;
->                              l = $1 <> $2 <+?> minf <+?> fmap ann $4 <** ss};
+>                              l = $1 <> $2 <+?> minf <+?> fmap ann (listToMaybe $4) <** ss};
 >                        checkDataOrNew $1 qds;
->                        return (DataDecl l $1 cs dh (reverse qds) $4) } }
+>                        return (DataDecl l $1 cs dh (reverse qds) (reverse $4)) } }
 
 Requires the GADTs extension enabled, handled in gadtlist.
->       | data_or_newtype ctype optkind gadtlist deriving
+>       | data_or_newtype ctype optkind gadtlist maybe_derivings
 >                {% do { (cs,dh) <- checkDataHeader $2;
 >                        let { (gs,ss,minf) = $4;
->                              l = ann $1 <+?> minf <+?> fmap ann $5 <** (snd $3 ++ ss)};
+>                              derivs' = reverse $5;
+>                              l = ann $1 <+?> minf <+?> fmap ann (listToMaybe $5) <** (snd $3 ++ ss)};
 >                        checkDataOrNewG $1 gs;
 >                        case (gs, fst $3) of
->                         ([], Nothing) -> return (DataDecl l $1 cs dh [] $5)
->                         _ -> checkEnabled GADTs >> return (GDataDecl l $1 cs dh (fst $3) (reverse gs) $5) } }
+>                         ([], Nothing) -> return (DataDecl l $1 cs dh [] derivs')
+>                         _ -> checkEnabled GADTs >> return (GDataDecl l $1 cs dh (fst $3) (reverse gs) derivs') } }
 
 Same as above, lexer will handle it through the 'family' keyword.
 >       | 'data' 'family' ctype opt_datafam_kind_sig
@@ -607,22 +618,23 @@ Same as above, lexer will handle it through the 'family' keyword.
 >                        return (DataFamDecl l cs dh $4) } }
 
 Here we must check for TypeFamilies.
->       | data_or_newtype 'instance' truectype constrs0 deriving
+>       | data_or_newtype 'instance' truectype constrs0 maybe_derivings
 >                {% do { -- (cs,c,t) <- checkDataHeader $4;
 >                        checkEnabled TypeFamilies ;
 >                        let { (qds,ss,minf) = $4 ;
->                              l = $1 <> $3 <+?> minf <+?> fmap ann $5 <** $2:ss };
+>                              l = $1 <> $3 <+?> minf <+?> fmap ann (listToMaybe $5) <** $2:ss };
 >                        checkDataOrNew $1 qds;
->                        return (DataInsDecl l $1 $3 (reverse qds) $5) } }
+>                        return (DataInsDecl l $1 $3 (reverse qds) (reverse $5)) } }
 
 This style requires both TypeFamilies and GADTs, the latter is handled in gadtlist.
->       | data_or_newtype 'instance' truectype optkind gadtlist deriving
+>       | data_or_newtype 'instance' truectype optkind gadtlist maybe_derivings
 >                {% do { -- (cs,c,t) <- checkDataHeader $4;
 >                        checkEnabled TypeFamilies ;
 >                        let {(gs,ss,minf) = $5;
->                             l = ann $1 <+?> minf <+?> fmap ann $6 <** ($2:snd $4 ++ ss)};
+>                             derivs' = reverse $6;
+>                             l = ann $1 <+?> minf <+?> fmap ann (listToMaybe derivs') <** ($2:snd $4 ++ ss)};
 >                        checkDataOrNewG $1 gs;
->                        return (GDataInsDecl l $1 $3 (fst $4) (reverse gs) $6) } }
+>                        return (GDataInsDecl l $1 $3 (fst $4) (reverse gs) derivs') } }
 >       | 'class' ctype fds optcbody
 >                {% do { (cs,dh) <- checkClassHeader $2;
 >                        let {(fds,ss1,minf1) = $3;(mcs,ss2,minf2) = $4} ;
@@ -634,11 +646,11 @@ This style requires both TypeFamilies and GADTs, the latter is handled in gadtli
 >                        return (InstDecl (nIS $1 <++> ann $3 <+?> minf <** ($1:ss)) $2 ih mis) } }
 
 Requires the StandaloneDeriving extension enabled.
->       | 'deriving' 'instance' optoverlap ctype
+>       | 'deriving' deriv_strategy 'instance' optoverlap ctype
 >                {% do { checkEnabled StandaloneDeriving ;
->                        ih <- checkInstHeader $4;
->                        let {l = nIS $1 <++> ann $4 <** [$1,$2]};
->                        return (DerivDecl l $3 ih) } }
+>                        ih <- checkInstHeader $5;
+>                        let {l = nIS $1 <++> ann $5 <** [$1,$3]};
+>                        return (DerivDecl l $2 $4 ih) } }
 >       | 'default' '(' typelist ')'
 >                { DefaultDecl ($1 <^^> $4 <** ($1:$2 : snd $3 ++ [$4])) (fst $3) }
 
@@ -663,6 +675,9 @@ lexer through the 'foreign' (and 'export') keyword.
 >       | '{-# DEPRECATED' warndeprs  '#-}'     { DeprPragmaDecl ($1 <^^> $3 <** ($1:snd $2++[$3])) $ reverse (fst $2) }
 >       | '{-# WARNING'    warndeprs  '#-}'     { WarnPragmaDecl ($1 <^^> $3 <** ($1:snd $2++[$3])) $ reverse (fst $2) }
 >       | '{-# ANN'        annotation '#-}'     { AnnPragma      ($1 <^^> $3 <** [$1,$3]) $2 }
+>       | '{-# COMPLETE' con_list opt_tyconsig '#-}'
+>           { let com = maybe [] ((:[]) . fst) $3; ts = fmap snd $3 in
+> (CompletePragma ($1 <^^> $4 <** ([$1] ++ fst $2 ++ com ++ [$4])) (snd $2) ts) }
 >       | decl          { $1 }
 
 > -- Family result/return kind signatures
@@ -707,7 +722,10 @@ Role annotations
 
 
 > optoverlap :: { Maybe (Overlap L) }
->  : '{-# OVERLAP'    '#-}'    { Just (Overlap (nIS $1)) }
+>  : '{-# OVERLAP'      '#-}'    { Just (Overlap (nIS $1)) }
+>  | '{-# OVERLAPS'     '#-}'    { Just (Overlaps (nIS $1)) }
+>  | '{-# OVERLAPPING'  '#-}'    { Just (Overlapping (nIS $1)) }
+>  | '{-# OVERLAPPABLE' '#-}'    { Just (Overlappable (nIS $1)) }
 >  | '{-# INCOHERENT' '#-}'    { Just (Incoherent (nIS $1)) }
 >  | '{-# NO_OVERLAP' '#-}'    { Just (NoOverlap (nIS $1))  }
 >  | {- empty -}               { Nothing }
@@ -926,7 +944,7 @@ Type equality contraints need the TypeFamilies extension.
 > dtype :: { PType L }
 >       : btype                         { splitTilde $1 }
 >       | btype qtyconop dtype          { TyInfix ($1 <> $3) $1 $2 $3 }
->       | btype qtyvarop dtype          { TyInfix ($1 <> $3) $1 $2 $3 } -- FIXME
+>       | btype qtyvarop dtype          { TyInfix ($1 <> $3) $1 (UnpromotedName (ann $2) $2) $3 } -- FIXME
 >       | btype '->' ctype              { TyFun ($1 <> $3 <** [$2]) (splitTilde $1) $3 }
        | btype '~' btype               {% do { checkEnabledOneOf [TypeFamilies, GADTs] ;
                                                let {l = $1 <> $3 <** [$2]};
@@ -959,6 +977,7 @@ the (# and #) lexemes. Kinds will be handled at the kind rule.
 >       | strict_mark atype             { let (mstrict, mupack) = $1
 >                                         in bangType mstrict mupack $2 }
 >       | '(' types ')'                 { TyTuple ($1 <^^> $3 <** ($1:reverse ($3:snd $2))) Boxed   (reverse (fst $2)) }
+>       | '(#' types_bars2 '#)'         { TyUnboxedSum ($1 <^^> $3 <** ($1: reverse ($3: snd $2))) (reverse (fst $2))  }
 >       | '(#' types1 '#)'              { TyTuple ($1 <^^> $3 <** ($1:reverse ($3:snd $2))) Unboxed (reverse (fst $2)) }
 >       | '[' type ']'                  { TyList  ($1 <^^> $3 <** [$1,$3]) $2 }
 >       | '[:' type ':]'                { TyParArray  ($1 <^^> $3 <** [$1,$3]) $2 }
@@ -971,15 +990,15 @@ the (# and #) lexemes. Kinds will be handled at the kind rule.
 >       | ptype                         { % checkEnabled DataKinds >> return (TyPromoted (ann $1) $1) }
 
 > ptype :: { Promoted L }
->       : VARQUOTE '[' types1 ']'       {% PromotedList  ($1 <^^> $4 <** ($1:reverse($4:snd $3))) True . reverse <\$> mapM checkType (fst $3) }
->       | VARQUOTE '['        ']'       { PromotedList   ($1 <^^> $3 <** [$1, $3]) True  [] }
+>       : VARQUOTE gcon_nolist                 {% fmap (PromotedCon (nIS $1 <++> ann $2  <** [$1]) True) (pexprToQName $2) }
+>       | VARQUOTE '[' types1 ']'       {% PromotedList  ($1 <^^> $4 <** ($1:reverse($4:snd $3))) True . reverse <\$> mapM checkType (fst $3) }
 >       |          '[' types  ']'       {% PromotedList  ($1 <^^> $3 <** ($1:reverse($3:snd $2))) False . reverse <\$> mapM checkType (fst $2) }
+>       | VARQUOTE '[' ']'              { PromotedList  ($1 <^^> $3 <** [$1, $3]) True [] }
+       | '[' ']'                       {% PromotedList  ($1 <^^> $2 <** [$1, $2]) False [] }
 >       | VARQUOTE '(' types1 ')'       {% PromotedTuple ($1 <^^> $4 <** ($1:reverse($4:snd $3))) . reverse <\$> mapM checkType (fst $3) }
->       | VARQUOTE '('        ')'       { PromotedUnit  ($1 <^^> $3 ) }
->       | VARQUOTE gconsym              { PromotedCon ((noInfoSpan $1 <++> ann $2) <** [$1]) True  $2 }
->       | VARQUOTE qtyconorcls          { PromotedCon ((noInfoSpan $1 <++> ann $2) <** [$1]) True  $2 }
 >       | INT                           { let Loc l (IntTok  (i,raw)) = $1 in PromotedInteger (nIS l) i raw }
 >       | STRING                        { let Loc l (StringTok (s,raw)) = $1 in PromotedString (nIS l) s raw }
+
 
 > strict_mark :: { (Maybe (L -> BangType L,S), Maybe (Unpackedness L)) }
 >        : strictness              { (Just $1, Nothing) }
@@ -1011,8 +1030,9 @@ the (# and #) lexemes. Kinds will be handled at the kind rule.
 
 These are for infix types
 
-> qtyconop :: { QName L }
->       : qconop                        { $1 }
+> qtyconop :: { MaybePromotedName L }
+>       : qconop                        { UnpromotedName (ann $1) $1 }
+>       | VARQUOTE gconsym              { PromotedName (nIS $1 <++> ann $2 <** [$1]) $2 }
 
 
 (Slightly edited) Comment from GHC's hsparser.y:
@@ -1047,6 +1067,10 @@ Equality constraints require the TypeFamilies extension.
 > types1 :: { ([PType L],[S]) }
 >       : ctype                         { ([$1],[]) }
 >       | types1 ',' ctype              { ($3 : fst $1, $2 : snd $1) }
+
+> types_bars2 :: { ([PType L],[S]) }
+>   : ctype '|' ctype                   { ([$3, $1], [$2]) }
+>   | types_bars2 '|' ctype             { ($3 : fst $1, $2 : snd $1) }
 
 > ktyvars :: { ([TyVarBind L],Maybe L) }
 >       : ktyvars ktyvar                { ($2 : fst $1, Just (snd $1 <?+> ann $2)) }
@@ -1150,14 +1174,24 @@ as qcon and then check separately that they are truly unqualified.
 > fielddecl :: { FieldDecl L }
 >       : vars '::' truectype               { let (ns,ss,l) = $1 in FieldDecl (l <++> ann $3 <** (reverse ss ++ [$2])) (reverse ns) $3 }
 
-> deriving :: { Maybe (Deriving L) }
->       : {- empty -}                   { Nothing }
->       | 'deriving' qtycls1            { let l = nIS $1 <++> ann $2 <** [$1] in Just $ Deriving l [IRule (ann $2) Nothing Nothing $2] }
->       | 'deriving' '('          ')'   { Just $ Deriving ($1 <^^> $3 <** [$1,$2,$3]) [] }
->       | 'deriving' '(' dclasses ')'   { -- Distinguish deriving (Show) from deriving Show (#189)
->                                         case fst $3 of
->                                           [ts] -> Just $ Deriving ($1 <^^> $4 <** [$1]) [IParen ($2 <^^> $4 <** [$2,$4]) ts]
->                                           tss  -> Just $ Deriving ($1 <^^> $4 <** $1:$2: reverse (snd $3) ++ [$4]) (reverse tss)}
+> maybe_derivings :: { [Deriving L] }
+>       : {- empty -}                   { [] }
+>       | derivings                     { $1 }
+
+> derivings :: { [Deriving L] }
+>       : derivings deriving            { $2 : $1 }
+>       | deriving                      { [$1] }
+
+> deriving :: { Deriving L }
+>       : 'deriving' deriv_strategy qtycls1
+>                                       { let l = nIS $1 <++> ann $3 <** [$1] in Deriving l $2 [IRule (ann $3) Nothing Nothing $3] }
+>       | 'deriving' deriv_strategy '(' ')'
+>                                       { Deriving ($1 <^^> $4 <** [$1,$3,$4]) $2 [] }
+>       | 'deriving' deriv_strategy '(' dclasses ')'
+>                                       { -- Distinguish deriving (Show) from deriving Show (#189)
+>                                         case fst $4 of
+>                                           [ts] -> Deriving ($1 <^^> $5 <** [$1]) $2 [IParen ($3 <^^> $5 <** [$3,$5]) ts]
+>                                           tss  -> Deriving ($1 <^^> $5 <** $1:$3: reverse (snd $4) ++ [$5]) $2 (reverse tss)}
 
 > dclasses :: { ([InstRule L],[S]) }
 >       : types1                        {% checkDeriving (fst $1) >>= \ds -> return (ds, snd $1) }
@@ -1203,6 +1237,10 @@ KindParen covers 1-tuples, KindVar l  while KindTuple is for pairs
 > optkind :: { (Maybe (Kind L), [S]) }
 >       : {-empty-}             { (Nothing,[]) }
 >       | '::' kind             { (Just $2,[$1]) }
+
+> opt_tyconsig :: { Maybe ( S, QName L ) }
+>              : {- empty -}    { Nothing }
+>              | '::' gtycon    { Just ($1, $2) }
 -----------------------------------------------------------------------------
 Class declarations
 
@@ -1280,16 +1318,16 @@ Associated types require the TypeFamilies extension enabled.
 >       : 'type' truedtype '=' truectype
 >                {% do { -- no checkSimpleType $4 since dtype may contain type patterns
 >                        return (InsType (nIS $1 <++> ann $4 <** [$1,$3]) $2 $4) } }
->       | data_or_newtype truectype constrs0 deriving
+>       | data_or_newtype truectype constrs0 maybe_derivings
 >                {% do { -- (cs,c,t) <- checkDataHeader $4;
 >                        let {(ds,ss,minf) = $3};
 >                        checkDataOrNew $1 ds;
->                        return (InsData ($1 <> $2 <+?> minf <+?> fmap ann $4 <** ss ) $1 $2 (reverse ds) $4) } }
->       | data_or_newtype truectype optkind gadtlist deriving
+>                        return (InsData ($1 <> $2 <+?> minf <+?> fmap ann (listToMaybe $4) <** ss ) $1 $2 (reverse ds) (reverse $4)) } }
+>       | data_or_newtype truectype optkind gadtlist maybe_derivings
 >                {% do { -- (cs,c,t) <- checkDataHeader $4;
 >                        let { (gs,ss,minf) = $4 } ;
 >                        checkDataOrNewG $1 gs;
->                        return $ InsGData (ann $1 <+?> minf <+?> fmap ann $5 <** (snd $3 ++ ss)) $1 $2 (fst $3) (reverse gs) $5 } }
+>                        return $ InsGData (ann $1 <+?> minf <+?> fmap ann (listToMaybe $5) <** (snd $3 ++ ss)) $1 $2 (fst $3) (reverse gs) (reverse $5) } }
 
 -----------------------------------------------------------------------------
 Value definitions
@@ -1466,24 +1504,18 @@ thing we need to look at here is the erpats that use no non-standard lexemes.
 >       | gcon                          { $1 }
 >       | literal                       { Lit (ann $1) $1 }
 >       | '(' texp ')'                  { Paren ($1 <^^> $3 <** [$1,$3]) $2 }
->       | '(' texp tsectend             { TupleSection ($1 <^^> head (snd $3) <** $1:reverse (snd $3)) Boxed (Just $2 : fst $3) }
->       | '(' commas texp ')'           { TupleSection ($1 <^^> $4 <** $1:reverse ($4:$2)) Boxed
->                                                       (replicate (length $2) Nothing ++ [Just $3]) }
->       | '(' commas texp tsectend      { TupleSection ($1 <^^> head (snd $4) <** $1:reverse (snd $4 ++ $2)) Boxed
->                                                       (replicate (length $2) Nothing ++ Just $3 : fst $4) }
->       | '(#' texp thashsectend        { TupleSection ($1 <^^> head (snd $3) <** $1:reverse (snd $3)) Unboxed (Just $2 : fst $3) }
+>       | '(' tup_exprs ')'             {% do { e <- mkSumOrTuple Boxed ($1 <^^> $3) (snd $2)
+>                                             ; return $ amap (\l -> l <** [$1] ++ fst $2 ++ [$3]) e } }
 >       | '(#' texp '#)'                { TupleSection ($1 <^^> $3 <** [$1,$3]) Unboxed [Just $2] }
->       | '(#' commas texp '#)'         { TupleSection ($1 <^^> $4 <** $1:reverse ($4:$2)) Unboxed
->                                                       (replicate (length $2) Nothing ++ [Just $3]) }
->       | '(#' commas texp thashsectend { TupleSection ($1 <^^> head (snd $4) <** $1:reverse (snd $4 ++ $2)) Unboxed
->                                                       (replicate (length $2) Nothing ++ Just $3 : fst $4) }
+>       | '(#' tup_exprs '#)'         {% do { e <- mkSumOrTuple Unboxed ($1 <^^> $3) (snd $2)
+>                                           ; return $ amap (\l -> l <** [$1] ++ fst $2 ++ [$3]) e } }
 >       | '[' list ']'                  { amap (\l -> l <** [$3]) $ $2 ($1 <^^> $3 <** [$1]) }
 >       | '[:' parr ':]'                { amap (\l -> l <** [$3]) $ $2 ($1 <^^> $3 <** [$1]) }
->       | '_'                           { WildCard (nIS $1) }
 >       | '(' erpats ')'                {% checkEnabled RegularPatterns >> return (Paren ($1 <^^> $3 <** [$1,$3]) $2) }
 >       | '(|' sexps '|)'               { SeqRP ($1 <^^> $3 <** ($1:reverse (snd $2) ++ [$3])) $ reverse (fst $2) }
 >       | '(|' exp '|' quals '|)'       { GuardRP ($1 <^^> $5 <** ($1:$3 : snd $4 ++ [$5])) $2 $ (reverse $ fst $4) }
 >       | xml                           { $1 }
+
 
 Template Haskell - all this is enabled in the lexer.
 >       | IDSPLICE                      { let Loc l (THIdEscape s) = $1 in SpliceExp (nIS l) $ IdSplice (nIS l) s }
@@ -1505,25 +1537,37 @@ Template Haskell - all this is enabled in the lexer.
 >       | QUASIQUOTE                    { let Loc l (THQuasiQuote (n,q)) = $1 in QuasiQuote (nIS l) n q }
 End Template Haskell
 
+> tup_exprs :: { ([S], SumOrTuple L) }
+>       : texp commas_tup_tail          { (fst $2, STuple (Just $1 : snd $2)) }
+>       | texp bars                     { ($2, SSum 0 (length $2) $1) }
+>       | commas tup_tail               { ($1 ++ (fst $2), STuple ((map (const Nothing) $1) ++ snd $2)) }
+>       | bars texp bars0               { ($1 ++ $3, SSum (length $1) (length $3) $2) }
+
+> commas_tup_tail :: { ([S], [Maybe (PExp L)]) }
+>       : commas tup_tail               { (reverse $1 ++ fst $2, map (const Nothing) (tail $1) ++ snd $2) }
+
+> tup_tail :: { ([S], [Maybe (PExp L)]) }
+>           : texp commas_tup_tail { (fst $2, Just $1 : snd $2) }
+>           | texp                 { ([], [Just $1]) }
+>           | {- empty -}          { ([], [Nothing]) }
+
 > commas :: { [S] }
 >       : commas ','                    { $2 : $1 }
 >       | ','                           { [$1] }
+
+> bars :: { [S] }
+>   : bars '|'  { $2 : $1 }
+>   | '|'       { [$1] }
+
+> bars0 :: { [S] }
+>        : bars { $1 }
+>        |      { [] }
 
 > texp :: { PExp L }
 >       : exp                           { $1 }
 >       | qopm exp0                     { PreOp ($1 <> $2) $1 $2 }
 >       | exp '->' pat                  {% do {checkEnabled ViewPatterns;
 >                                              return $ ViewPat ($1 <> $3 <** [$2]) $1 $3} }
-
-> tsectend :: { ([Maybe (PExp L)],[S]) }
->       : commas texp tsectend          { let (mes, ss) = $3 in (replicate (length $1 - 1) Nothing ++ Just $2 : mes, ss ++ $1) }
->       | commas texp ')'               { (replicate (length $1 - 1) Nothing ++ [Just $2], $3 : $1) }
->       | commas ')'                    { (replicate (length $1) Nothing, $2 : $1) }
-
-> thashsectend :: { ([Maybe (PExp L)],[S]) }
->       : commas texp thashsectend      { let (mes, ss) = $3 in (replicate (length $1 - 1) Nothing ++ Just $2 : mes, ss ++ $1) }
->       | commas texp '#)'              { (replicate (length $1 - 1) Nothing ++ [Just $2], $3 : $1) }
->       | commas '#)'                   { (replicate (length $1) Nothing, $2 : $1) }
 
 -----------------------------------------------------------------------------
 Harp Extensions
@@ -1811,12 +1855,23 @@ Implicit parameter bindings - need the ImplicitParameter extension enabled, but 
 Variables, Constructors and Operators.
 
 > gcon :: { PExp L }
+>       : sysdcon               { $1 }
+>       | qcon                  { Con (ann $1) $1 }
+
+> gcon_nolist :: { PExp L }
+>       : sysdcon_nolist        { $1 }
+>       | qcon                  { Con (ann $1) $1 }
+
+> sysdcon_nolist :: { PExp L }
 >       : '(' ')'               { p_unit_con              ($1 <^^> $2 <** [$1,$2]) }
->       | '[' ']'               { List                    ($1 <^^> $2 <** [$1,$2]) [] }
->       | '(' commas ')'        { p_tuple_con             ($1 <^^> $3 <** $1:reverse ($3:$2)) Boxed (length $2) }
 >       | '(#' '#)'             { p_unboxed_singleton_con ($1 <^^> $2 <** [$1,$2]) }
 >       | '(#' commas '#)'      { p_tuple_con             ($1 <^^> $3 <** $1:reverse ($3:$2)) Unboxed (length $2) }
->       | qcon                  { Con (ann $1) $1 }
+>       | '(' commas ')'        { p_tuple_con             ($1 <^^> $3 <** $1:reverse ($3:$2)) Boxed (length $2) }
+
+
+> sysdcon :: { PExp L }
+>       : '[' ']'               { List                    ($1 <^^> $2 <** [$1,$2]) [] }
+>       | sysdcon_nolist        { $1 }
 
 > var   :: { Name L }
 >       : varid                 { $1 }
@@ -1837,6 +1892,11 @@ Implicit parameter
 > con   :: { Name L }
 >       : conid                 { $1 }
 >       | '(' consym ')'        { fmap (const ($1 <^^> $3 <** [$1, srcInfoSpan (ann $2), $3])) $2 }
+
+> con_list :: { ([S], [Name L]) }
+>          : con                { ([], [$1]) }
+>          | con ',' con_list   { let (ss, cs) = $3
+>                                 in ($2 : ss, $1 :cs) }
 
 > qcon  :: { QName L }
 >       : qconid                { $1 }
@@ -1889,6 +1949,7 @@ Identifiers and Symbols
 >       : varid                 { UnQual (ann $1) $1 }
 >       | QVARID                { let {Loc l (QVarId q) = $1; nis = nIS l}
 >                                  in Qual nis (ModuleName nis (fst q)) (Ident nis (snd q)) }
+>       | '_'                   { hole_name       (nIS $1) }
 
 > varid_no_safety :: { Name L }
 >       : VARID                 { let Loc l (VarId v) = $1 in Ident (nIS l) v }
@@ -1904,6 +1965,8 @@ Identifiers and Symbols
 >       | 'js'                  { js_name         (nIS $1) }
 >       | 'javascript'          { javascript_name (nIS $1) }
 >       | 'capi'                { capi_name       (nIS $1) }
+>       | 'stock'               { stock_name      (nIS $1) }
+>       | 'anyclass'            { anyclass_name   (nIS $1) }
 
 > varid :: { Name L }
 >       : varid_no_safety       { $1 }
@@ -2023,10 +2086,10 @@ Pattern Synonyms
 >       | 'where' open decls close    {%  checkExplicitPatSyn $1 $2 $3 $4 }
 
 > pattern_synonym_sig :: { Decl L }
->       : 'pattern' con '::' pstype
+>       : 'pattern' con_list '::' pstype
 >             {% do { checkEnabled PatternSynonyms ;
 >                     let {(qtvs, ps, prov, req, ty) = $4} ;
->                     let {sig = PatSynSig (nIS $1 <++> ann ty <** [$1, $3] ++ ps)  $2 qtvs prov req ty} ;
+>                     let {sig = PatSynSig (nIS $1 <++> ann ty <** [$1] ++ fst $2 ++ [$3] ++ ps)  (snd $2) qtvs prov req ty} ;
 >                     return sig } }
 
 > pstype :: { (Maybe [TyVarBind L], [S], Maybe (Context L), Maybe (Context L), Type L )}
@@ -2044,6 +2107,20 @@ Pattern Synonyms
 >                      return (Nothing, [], c1, Nothing, t) } }
 >       | type
 >              {% checkType $1 >>= \t -> return (Nothing, [], Nothing, Nothing, t) }
+
+-----------------------------------------------------------------------------
+Deriving strategies
+
+> deriv_strategy :: { Maybe (DerivStrategy L) }
+>       : 'stock'               {% do { checkEnabled DerivingStrategies
+>                                     ; return (Just (DerivStock (nIS $1))) } }
+>       | 'anyclass'            {% do { checkEnabled DerivingStrategies
+>                                     ; checkEnabled DeriveAnyClass
+>                                     ; return (Just (DerivAnyclass (nIS $1))) } }
+>       | 'newtype'             {% do { checkEnabled DerivingStrategies
+>                                     ; checkEnabled GeneralizedNewtypeDeriving
+>                                     ; return (Just (DerivNewtype (nIS $1))) } }
+>       | {- empty -}           { Nothing }
 
 -----------------------------------------------------------------------------
 Miscellaneous (mostly renamings)
@@ -2076,6 +2153,7 @@ Miscellaneous (mostly renamings)
 > tyvarsym :: { Name L }
 > tyvarsym : VARSYM              { let Loc l (VarSym x) = $1 in Symbol (nIS l) x }
 >          | '-'                 { Symbol (nIS $1) "-" }
+>          | '*'                 { Symbol (nIS $1) "*" }
 
 > impdeclsblock :: { ([ImportDecl L],[S],L) }
 >               : '{'  optsemis impdecls optsemis '}'         { let (ids, ss) = $3 in (ids, $1 : reverse $2 ++ ss ++ reverse $4 ++ [$5], $1 <^^> $5) }

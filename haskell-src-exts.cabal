@@ -1,10 +1,10 @@
 Name:                   haskell-src-exts-confer
-Version:                1.19.1
+Version:                1.20.2
 License:                BSD3
 License-File:           LICENSE
 Build-Type:             Simple
 Author:                 Niklas Broberg
-Maintainer:             Niklas Broberg <niklas.broberg@chalmers.se>, Roman Cheplyaka <roma@ro-che.info>
+Maintainer:             Matthew Pickering <matthewtpickering@gmail.com>
 Category:               Language
 Synopsis:               Manipulating Haskell source: abstract syntax, lexer, parser, and pretty-printer
 Description:            Haskell-Source with Extensions (HSE, haskell-src-exts)
@@ -17,11 +17,13 @@ Description:            Haskell-Source with Extensions (HSE, haskell-src-exts)
 Homepage:               https://github.com/haskell-suite/haskell-src-exts
 Stability:              Stable
 Cabal-Version:          >= 1.10
-Tested-With:              GHC == 7.4.2
-                        , GHC == 7.6.3
+Tested-With:
+                        GHC == 7.6.3
                         , GHC == 7.8.2
                         , GHC == 7.10.3
-                        , GHC == 8.0.1
+                        , GHC == 8.0.2
+                        , GHC == 8.2.2
+                        , GHC == 8.4.1
 
 Extra-Source-Files:
                         README.md
@@ -47,6 +49,10 @@ Library
                         base >= 4.5 && < 5,
                         -- this is needed to access GHC.Generics on GHC 7.4
                         ghc-prim
+  -- this is needed to access Data.Semigroup on GHCs before 8.0
+  if !impl(ghc >= 8.0)
+    Build-Depends:
+                        semigroups >= 0.18.3
 
   Exposed-modules:      Language.Haskell.Exts,
                         Language.Haskell.Exts.Lexer,
@@ -78,7 +84,8 @@ Test-Suite test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      tests
   main-is:             Runner.hs
-  GHC-Options:         -threaded -Wall -O0
+  other-modules:       Extensions
+  GHC-Options:         -threaded -Wall
   Default-language:    Haskell2010
   Build-depends:       base < 5,
                        mtl,
@@ -90,4 +97,4 @@ Test-Suite test
                        tasty-golden >= 2.2.2,
                        filepath,
                        directory,
-                       pretty-show >= 1.6.10
+                       pretty-show >= 1.6.16

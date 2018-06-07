@@ -71,11 +71,14 @@ module Language.Haskell.Exts.ParseUtils (
     -- Helpers
     , updateQNameLoc        -- l -> QName l -> QName l
 
+    , SumOrTuple(..), mkSumOrTuple
+
     -- Parsed expressions and types
     , PExp(..), PFieldUpdate(..), ParseXAttr(..), PType(..), PContext, PAsst(..)
     , p_unit_con            -- PExp
     , p_tuple_con           -- Boxed -> Int -> PExp
     , p_unboxed_singleton_con   -- PExp
+    , pexprToQName
     ) where
 
 import Language.Haskell.Exts.Syntax hiding ( Type(..), Asst(..), Exp(..), FieldUpdate(..), XAttr(..), Context(..) )
@@ -101,6 +104,11 @@ import Control.Applicative (Applicative (..), (<$>))
 type L = SrcSpanInfo
 type S = SrcSpan
 
+pexprToQName :: PExp l -> P (QName l)
+pexprToQName (Con _ qn) = return qn
+pexprToQName (List l []) = return $ Special l (ListCon l)
+pexprToQName _ = fail "pexprToQName"
+
 splitTyConApp :: PType L -> P (Name L, [S.Type L])
 splitTyConApp t0 = do
             (n, pts) <- split t0 []
@@ -110,7 +118,7 @@ splitTyConApp t0 = do
     split :: PType L -> [PType L] -> P (Name L, [PType L])
     split (TyApp _ t u) ts = split t (u:ts)
     split (TyCon _ (UnQual _ t)) ts = return (t,ts)
-    split (TyInfix l a op b) ts = split (TyCon l op) (a:b:ts)
+    split (TyInfix l a op b) ts = split (TyCon l (getMaybePromotedQName op)) (a:b:ts)
     split _ _ = fail "Illegal data/newtype declaration"
 
 -----------------------------------------------------------------------------
@@ -202,8 +210,8 @@ checkAssertion t' = checkAssertion' id [] t'
                 checkAssertion' (const (fl l)) (t:ts) a
             checkAssertion' fl _ (TyInfix l a op b) = do
                 -- infix operators require TypeOperators
-                checkAndWarnTypeOperators op
-                return $ InfixA (fl l) a op b
+                checkAndWarnTypeOperators (getMaybePromotedQName op)
+                return $ InfixA (fl l) a (getMaybePromotedQName op) b
             checkAssertion' fl ts (TyParen l t) =
                 checkAssertion' (const (fl l)) ts t
             checkAssertion' fl ts (TyVar l t) = do -- Dict :: cxt => Dict cxt
@@ -332,7 +340,9 @@ checkSimple kw (TyApp l h t) = do
   tvb <- mkTyVarBind kw t
   h' <- checkSimple kw h
   return $ DHApp l h' tvb
-checkSimple kw (TyInfix l t1 c@(UnQual _ t) t2) = do
+checkSimple kw (TyInfix l t1 mq t2)
+  | c@(UnQual _ t) <- getMaybePromotedQName mq
+  = do
        checkAndWarnTypeOperators c
        tv1 <- mkTyVarBind kw t1
        tv2 <- mkTyVarBind kw t2
@@ -388,9 +398,9 @@ checkInstsGuts (TyCon l c) = do
     checkAndWarnTypeOperators c
     return $ IHCon l c
 checkInstsGuts (TyInfix l a op b) = do
-    checkAndWarnTypeOperators op
+    checkAndWarnTypeOperators (getMaybePromotedQName op)
     [ta,tb] <- checkTypes [a,b]
-    return $ IHApp l (IHInfix l ta op) tb
+    return $ IHApp l (IHInfix l ta (getMaybePromotedQName op)) tb
 checkInstsGuts (TyParen l t) = checkInstsGuts t >>= return . IHParen l
 checkInstsGuts _ = fail "Illegal instance declaration"
 
@@ -422,6 +432,7 @@ checkPat (InfixApp _ l op r) args
         checkPat l (ps++args)
 checkPat e' [] = case e' of
     Var _ (UnQual l x)   -> return (PVar l x)
+    Var _ (Special l (ExprHole _)) -> return (PWildCard l)
     Lit l lit            -> return (PLit l (Signless l2) lit)
             where l2 = noInfoSpan . srcInfoSpan $ l
     InfixApp loc l op r  ->
@@ -444,6 +455,8 @@ checkPat e' [] = case e' of
              then do ps <- mapM (\e -> checkPat e []) (map fromJust mes)
                      return (PTuple l bx ps)
              else fail "Illegal tuple section in pattern"
+    UnboxedSum l b a e ->
+      PUnboxedSum l b a <$> checkPattern e
 
     List l es      -> do
                   ps <- mapM checkRPattern es
@@ -515,7 +528,8 @@ checkPat e' [] = case e' of
             rps <- mapM checkRPattern es
             return (PXRPats l $ map fixRPOpPrec rps)
 
-    -- QuasiQuotation
+    -- Template Haskell
+    SpliceExp l e -> return $ PSplice l e
     QuasiQuote l n q -> return $ PQuasiQuote l n q
 
     -- BangPatterns
@@ -666,6 +680,7 @@ checkExpr e' = case e' of
                              else do checkEnabled TupleSections
                                      mes' <- mapM mCheckExpr mes
                                      return $ S.TupleSection l bx mes'
+    UnboxedSum l before after e -> S.UnboxedSum l before after <$> checkExpr e
 
 
     List l es         -> checkManyExprs es (S.List l)
@@ -743,7 +758,6 @@ checkExpr e' = case e' of
     LCase l alts -> return $ S.LCase l alts
 
     -- Hole
-    WildCard l     -> return $ S.ExprHole l
     TypeApp l ty   -> return $ S.TypeApp l ty
 
     _             -> fail $ "Parse error in expression: " ++ prettyPrint e'
@@ -1095,6 +1109,7 @@ checkT t simple = case t of
             check1Type pt (S.TyForall l tvs ctxt)
     TyFun   l at rt   -> check2Types at rt (S.TyFun l)
     TyTuple l b pts   -> checkTypes pts >>= return . S.TyTuple l b
+    TyUnboxedSum l es -> checkTypes es >>= return . S.TyUnboxedSum l
     TyList  l pt      -> check1Type pt (S.TyList l)
     TyParArray l pt   -> check1Type pt (S.TyParArray l)
     TyApp   l ft at   -> check2Types ft at (S.TyApp l)
@@ -1105,12 +1120,13 @@ checkT t simple = case t of
     TyParen l pt      -> check1Type pt (S.TyParen l)
     -- Here we know that t will be used as an actual type (and not a data constructor)
     -- so we can check that TypeOperators are enabled.
-    TyInfix l at op bt -> checkAndWarnTypeOperators op >> check2Types at bt (flip (S.TyInfix l) op)
+    TyInfix l at op bt -> checkAndWarnTypeOperators (getMaybePromotedQName op)
+                           >> check2Types at bt (flip (S.TyInfix l) op)
     TyKind  l pt k    -> check1Type pt (flip (S.TyKind l) k)
 
      -- TyPred can be a valid type if ConstraintKinds is enabled, unless it is an implicit parameter, which is not a valid type
     TyPred _ (ClassA l className cvars) -> mapM checkType cvars >>= \vars -> return (foldl1 (S.TyApp l) (S.TyCon l className:vars))
-    TyPred _ (InfixA l t0 op t1)        -> S.TyInfix l <$> checkType t0 <*> pure op <*> checkType t1
+    TyPred _ (InfixA l t0 op t1)        -> S.TyInfix l <$> checkType t0 <*> pure (UnpromotedName (ann op) op) <*> checkType t1
     TyPred _ (EqualP l t0    t1)        -> do
       checkEnabledOneOf [TypeFamilies, GADTs]
       S.TyEquals l <$> checkType t0 <*> checkType t1
@@ -1125,6 +1141,10 @@ checkT t simple = case t of
                               checkEnabled QuasiQuotes
                               return $ S.TyQuasiQuote l n s
     _   -> fail $ "Parse error in type: " ++ prettyPrint t
+
+getMaybePromotedQName :: MaybePromotedName l -> QName l
+getMaybePromotedQName (PromotedName _ q) = q
+getMaybePromotedQName (UnpromotedName _ q) = q
 
 check1Type :: PType L -> (S.Type L -> S.Type L) -> P (S.Type L)
 check1Type pt f = checkT pt True >>= return . f
@@ -1300,3 +1320,12 @@ mkEThingWith loc qn mcns = do
     findWithIndex n p (x:xs)
       | p x = Just (n, x)
       | otherwise = findWithIndex (n + 1) p xs
+
+data SumOrTuple l = SSum Int Int (PExp l)
+                  | STuple [Maybe (PExp l)]
+
+mkSumOrTuple :: Boxed -> L -> SumOrTuple L -> P (PExp L)
+mkSumOrTuple Unboxed s (SSum before after e) = return (UnboxedSum s before after e)
+mkSumOrTuple boxity s (STuple ms) =
+    return $ TupleSection s boxity ms
+mkSumOrTuple Boxed _s (SSum {}) = fail "Boxed sums are not implemented"

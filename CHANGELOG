@@ -1,3 +1,30 @@
+1.20.1 --> 1.20.2
+=================
+* Add fixity of (&)
+* GHC 8.4.1 compatability
+
+1.20.0 --> 1.20.1
+===================
+* Fix two test failures
+
+1.19.1 --> 1.20.0
+===================
+
+* GHC 8.2 updates
+* Add some missing Generics instances (#380)
+* Support Template Haskell pattern splices (#352)
+* Fix overloaded labels starting with _ (#362)
+* Relax MultiParamTypeClass check (#333)
+* DeriveAnyClass (#337)
+* Deriving Strategies (#387)
+* OVERLAPS/OVERLAPPING/OVERLAPPABLE pragmas
+* Unboxed Sums
+* Expression holes in infix expressions
+* Support multiple pattern synonyms per pattern synonym signature
+* COMPLETE pragmas
+* Fix #309, remove unnecessary semi-colon from pretty printer
+* Refine ExplicitNamespaces to properly export type operators
+
 1.19.0 --> 1.19.1
 ===================
 

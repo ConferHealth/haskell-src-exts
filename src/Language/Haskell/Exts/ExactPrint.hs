@@ -32,8 +32,6 @@ import Control.Arrow ((***), (&&&))
 import Prelude hiding (exp)
 import Data.List (intersperse)
 
--- import Debug.Trace (trace)
-
 ------------------------------------------------------
 -- The EP monad and basic combinators
 
@@ -188,12 +186,14 @@ pList' [] _ = []
 pList' [p] (_,c) = [(p,c)]
 pList' (p:ps) (b,c) = (p, b) : pList' ps (b,c)
 
-parenList, squareList, squareColonList, curlyList, parenHashList :: (ExactP ast) => [SrcSpan] -> [ast SrcSpanInfo] -> EP ()
+parenList, squareList, squareColonList, curlyList, parenHashList,
+  unboxedSumTypeList :: (ExactP ast) => [SrcSpan] -> [ast SrcSpanInfo] -> EP ()
 parenList = bracketList ("(",",",")")
 squareList = bracketList ("[",",","]")
 squareColonList = bracketList ("[:",",",":]")
 curlyList = bracketList ("{",",","}")
 parenHashList = bracketList ("(#",",","#)")
+unboxedSumTypeList = bracketList ("(#", "|", "#)")
 
 layoutList :: (ExactP ast) => [SrcSpan] -> [ast SrcSpanInfo] -> EP ()
 layoutList poss asts = printStreams
@@ -254,6 +254,7 @@ instance ExactP SpecialCon where
          _       -> "(" : replicate (n-1) "," ++ [")"]
     Cons _      -> printString ":"
     UnboxedSingleCon l -> printPoints l ["(#","#)"]
+    ExprHole l -> printStringAt (pos l) "_"
 
 isSymbolName :: Name l -> Bool
 isSymbolName (Symbol _ _) = True
@@ -604,7 +605,7 @@ instance ExactP Decl where
         exactPC dh
         -- the next line works for empty data types since the srcInfoPoints will be empty then
         printInterleaved (zip (srcInfoPoints l) ("=": repeat "|")) constrs
-        maybeEP exactPC mder
+        mapM_ exactPC mder
     GDataDecl    l dn mctxt dh mk gds mder -> do
         let pts = srcInfoPoints l
         exactP dn
@@ -622,7 +623,7 @@ instance ExactP Decl where
          x:pts' -> do
             printStringAt (pos x) "where"
             layoutList pts' gds
-            maybeEP exactPC mder
+            mapM_ exactPC mder
          _ -> errorEP "ExactP: Decl: GDataDecl is given too few srcInfoPoints"
     DataFamDecl  l mctxt dh mk -> do
         printString "data"
@@ -645,7 +646,7 @@ instance ExactP Decl where
             printStringAt (pos p) "instance"
             exactPC t
             printInterleaved (zip pts ("=": repeat "|")) constrs
-            maybeEP exactPC mder
+            mapM_ exactPC mder
          _ -> errorEP "ExactP: Decl: DataInsDecl is given too few srcInfoPoints"
     GDataInsDecl l dn t mk gds mder     ->
         case srcInfoPoints l of
@@ -665,7 +666,7 @@ instance ExactP Decl where
              x:pts' -> do
                 printStringAt (pos x) "where"
                 layoutList pts' gds
-                maybeEP exactPC mder
+                mapM_ exactPC mder
              _ -> errorEP "ExactP: Decl: GDataInsDecl is given too few srcInfoPoints"
          _ -> errorEP "ExactP: Decl: GDataInsDecl is given too few srcInfoPoints"
     ClassDecl    l mctxt dh fds mcds    ->
@@ -700,10 +701,11 @@ instance ExactP Decl where
                 layoutList pts' $ sepInstFunBinds ids
                 ) mids
          _ -> errorEP "ExactP: Decl: InstDecl is given too few srcInfoPoints"
-    DerivDecl    l movlp ih             ->
+    DerivDecl    l mds movlp ih             ->
         case srcInfoPoints l of
          [_,b] -> do
             printString "deriving"
+            maybeEP exactPC mds
             printStringAt (pos b) "instance"
             maybeEP exactPC movlp
             exactPC ih
@@ -732,25 +734,23 @@ instance ExactP Decl where
         let pts = srcInfoPoints l
         printInterleaved' (zip pts (replicate (length pts - 1) "," ++ ["::"])) ns
         exactPC t
-    PatSynSig l n dh c1 c2 t -> do
-      case srcInfoPoints l of
-        (pat:dc:pts1) -> do
-          printStringAt (pos pat) "pattern"
-          exactPC n
-          printStringAt (pos dc) "::"
-          case dh of
-            Nothing -> return ()
-            Just tvs ->
-              case pts1 of
-                (a:b:_) -> do
-                      printStringAt (pos a) "forall"
-                      mapM_ exactPC tvs
-                      printStringAt (pos b) "."
-                _ -> errorEP "ExactP: Decl: PatSynSig: Forall: is given too few srcInfoPoints"
-          maybeEP exactPC c1
-          maybeEP exactPC c2
-          exactPC t
-        _ -> errorEP "ExactP: Decl: PatSynSig: is given too few srcInfoPoints"
+    PatSynSig l ns dh c1 c2 t -> do
+        let (pat:pts) = srcInfoPoints l
+        printStringAt (pos pat) "pattern"
+        printInterleaved' (zip pts (replicate (length ns - 1) "," ++ ["::"])) ns
+        case dh of
+          Nothing -> return ()
+          Just tvs ->
+            -- (length ns - 1) commas + 1 for "::"
+            case drop (length ns) pts of
+              (a:b:_) -> do
+                    printStringAt (pos a) "forall"
+                    mapM_ exactPC tvs
+                    printStringAt (pos b) "."
+              _ -> errorEP ("ExactP: Decl: PatSynSig: Forall: is given too few srcInfoPoints" ++ show pts ++ show (drop (length ns + 1) pts))
+        maybeEP exactPC c1
+        maybeEP exactPC c2
+        exactPC t
     FunBind      _ ms   -> mapM_ exactPC ms
     PatBind      l p rhs mbs -> do
         let pts = srcInfoPoints l
@@ -901,6 +901,21 @@ instance ExactP Decl where
             exactPC ty
             mapM_ exactPC roles
          _ -> errorEP "ExactP: Decl: RoleAnnotDecl is given wrong number of srcInfoPoints"
+    CompletePragma l cls opt_ts ->
+      case srcInfoPoints l of
+        (t:rs) -> do
+          let (cls_s, rs') = splitAt (length cls - 1) rs
+          printStringAt (pos t)"{-# COMPLETE"
+          printInterleaved' (zip cls_s (repeat ",")) cls
+          case (rs', opt_ts) of
+             ((opt_dcolon: end:_), Just tc) -> do
+                printStringAt (pos opt_dcolon) "::"
+                exactPC tc
+                printStringAt (pos end) "#-}"
+             ([end], Nothing) -> printStringAt (pos end) "#-}"
+             _ -> errorEP "ExactP: Decl: CompletePragma is given wrong number of srcInfoPoints"
+        _ -> errorEP "ExactP: Decl: CompletePragma is given wrong number of srcInfoPoints"
+
 
 instance ExactP Role where
   exactP r =
@@ -1086,6 +1101,8 @@ instance ExactP Type where
         case bx of
           Boxed   -> parenList (srcInfoPoints l) ts
           Unboxed -> parenHashList (srcInfoPoints l) ts
+    TyUnboxedSum l es ->
+      unboxedSumTypeList (srcInfoPoints l) es
     TyList  l t     ->
         case srcInfoPoints l of
          [_,b] -> do
@@ -1110,7 +1127,7 @@ instance ExactP Type where
             exactPC t
             printStringAt (pos b) ")"
          _ -> errorEP "ExactP: Type: TyParen is given wrong number of srcInfoPoints"
-    TyInfix _ t1 qn t2 -> exactP t1 >> epInfixQName qn >> exactPC t2
+    TyInfix _ t1 qn t2 -> exactP t1 >> exactP qn >> exactPC t2
     TyKind  l t kd ->
         case srcInfoPoints l of
          [_,b,c] -> do
@@ -1133,6 +1150,12 @@ instance ExactP Type where
         printString $ "[" ++ name ++ "|"
         sequence_ (intersperse newLine $ map printString qtLines)
         printString "|]"
+
+instance ExactP MaybePromotedName where
+  exactP (PromotedName l qn)  = case srcInfoPoints l of
+    [a] -> printStringAt (pos a) "'" >> epInfixQName qn
+    _ -> errorEP "ExactP: MaybePromotedName: PromotedName given wrong number of args"
+  exactP (UnpromotedName _ qn) = epInfixQName qn
 
 instance ExactP Promoted where
   exactP (PromotedInteger _ _ rw) = printString rw
@@ -1207,14 +1230,23 @@ instance ExactP Asst where
     WildCardA _ mn -> printString "_" >> maybeEP exactPC mn
 
 instance ExactP Deriving where
-  exactP (Deriving l ihs) =
+  exactP (Deriving l mds ihs) =
     case srcInfoPoints l of
      _:pts -> do
         printString "deriving"
+        maybeEP exactPC mds
         case pts of
          [] -> exactPC $ head ihs
          _  -> parenList pts ihs
      _ -> errorEP "ExactP: Deriving is given too few srcInfoPoints"
+
+instance ExactP DerivStrategy where
+  exactP (DerivStock _) =
+    printString "stock"
+  exactP (DerivAnyclass _) =
+    printString "anyclass"
+  exactP (DerivNewtype _) =
+    printString "newtype"
 
 instance ExactP ClassDecl where
   exactP cdecl = case cdecl of
@@ -1270,7 +1302,7 @@ instance ExactP InstDecl where
         exactP dn
         exactPC t
         printInterleaved (zip (srcInfoPoints l) ("=": repeat "|")) constrs
-        maybeEP exactPC mder
+        mapM_ exactPC mder
     InsGData  l dn t mk gds mder  -> do
         let pts = srcInfoPoints l
         exactP dn
@@ -1287,7 +1319,7 @@ instance ExactP InstDecl where
          x:_ -> do
             printStringAt (pos x) "where"
             mapM_ exactPC gds
-            maybeEP exactPC mder
+            mapM_ exactPC mder
          _ -> errorEP "ExactP: InstDecl: InsGData is given too few srcInfoPoints"
 --  InsInline l inl mact qn   -> do
 --        case srcInfoPoints l of
@@ -1469,6 +1501,8 @@ instance ExactP Exp where
         case bx of
           Boxed   -> parenList (srcInfoPoints l) es
           Unboxed -> parenHashList (srcInfoPoints l) es
+    UnboxedSum l b a es -> do
+        unboxedSumEP l b a es
     TupleSection l bx mexps -> do
         let pts = srcInfoPoints l
             (o, e) = case bx of Boxed -> ("(", ")"); Unboxed -> ("(#", "#)")
@@ -1732,8 +1766,18 @@ instance ExactP Exp where
             printStringAt (pos b) "case"
             layoutList pts alts
          _ -> errorEP "ExactP: Exp: LCase is given wrong number of srcInfoPoints"
-    ExprHole _ -> printString "_"
     TypeApp _ ty -> printString "@" >> exactP ty
+
+unboxedSumEP :: ExactP e => SrcSpanInfo -> Int -> Int -> e SrcSpanInfo -> EP ()
+unboxedSumEP l b _a es = do
+        let (opt:pts) = srcInfoPoints l
+            (o, e) = ("(#", "#)")
+            bars = zip (map pos (init pts)) (map printString (repeat "|"))
+            open = (pos opt, printString o)
+            close = (pos (last pts), printString e)
+            fs = take b bars
+            as = drop b bars
+        printSeq $ open : fs ++ [((0, 0), exactPC es)] ++ as ++ [close]
 
 instance ExactP FieldUpdate where
   exactP fup = case fup of
@@ -1918,6 +1962,8 @@ instance ExactP Pat where
         case bx of
           Boxed   -> parenList (srcInfoPoints l) ps
           Unboxed -> parenHashList (srcInfoPoints l) ps
+    PUnboxedSum l before after e ->
+      unboxedSumEP l before after e
     PList l ps  -> squareList (srcInfoPoints l) ps
     PParen l p  -> parenList (srcInfoPoints l) [p]
     PRec l qn pfs   -> exactP qn >> curlyList (srcInfoPoints l) pfs
@@ -1990,6 +2036,7 @@ instance ExactP Pat where
             printString "%>"
          _ -> errorEP "ExactP: Pat: PXPatTag is given wrong number of srcInfoPoints"
     PXRPats  l rps  -> bracketList ("<[",",","]>") (srcInfoPoints l) rps
+    PSplice _ sp  -> exactP sp
     PQuasiQuote _ name qt   -> printString $ "[$" ++ name ++ "|" ++ qt ++ "]"
     PBangPat _ p    -> printString "!" >> exactPC p
 
@@ -2129,6 +2176,12 @@ instance ExactP Overlap where
     printString "{-# NO_OVERLAP #-}"
   exactP (Overlap _) =
     printString "{-# OVERLAP #-}"
+  exactP (Overlaps _) =
+    printString "{-# OVERLAPS #-}"
+  exactP (Overlapping _) =
+    printString "{-# OVERLAPPING #-}"
+  exactP (Overlappable _) =
+    printString "{-# OVERLAPPABLE #-}"
   exactP (Incoherent _) =
     printString "{-# INCOHERENT #-}"
 

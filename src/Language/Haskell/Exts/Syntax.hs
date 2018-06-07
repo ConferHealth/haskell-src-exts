@@ -56,7 +56,7 @@ module Language.Haskell.Exts.Syntax (
     Decl(..), DeclHead(..), InstRule(..), InstHead(..), Binds(..), IPBind(..), PatternSynDirection(..),
     InjectivityInfo(..), ResultSig(..),
     -- ** Type classes and instances
-    ClassDecl(..), InstDecl(..), Deriving(..),
+    ClassDecl(..), InstDecl(..), Deriving(..), DerivStrategy(..),
     -- ** Data type declarations
     DataOrNew(..), ConDecl(..), FieldDecl(..), QualConDecl(..), GadtDecl(..), BangType(..),
     Unpackedness(..),
@@ -77,6 +77,7 @@ module Language.Haskell.Exts.Syntax (
     -- * Variables, Constructors and Operators
     ModuleName(..), QName(..), Name(..), QOp(..), Op(..),
     SpecialCon(..), CName(..), IPName(..), XName(..), Role(..),
+    MaybePromotedName(..),
 
     -- * Template Haskell
     Bracket(..), Splice(..),
@@ -102,7 +103,8 @@ module Language.Haskell.Exts.Syntax (
     as_name, qualified_name, hiding_name, minus_name, bang_name, dot_name, star_name,
     export_name, safe_name, unsafe_name, interruptible_name, threadsafe_name,
     stdcall_name, ccall_name, cplusplus_name, dotnet_name, jvm_name, js_name,
-    javascript_name, capi_name, forall_name, family_name, role_name,
+    javascript_name, capi_name, forall_name, family_name, role_name, hole_name,
+    stock_name, anyclass_name,
     -- ** Type constructors
     unit_tycon_name, fun_tycon_name, list_tycon_name, tuple_tycon_name, unboxed_singleton_tycon_name,
     unit_tycon, fun_tycon, list_tycon, tuple_tycon, unboxed_singleton_tycon,
@@ -138,6 +140,7 @@ data SpecialCon l
                             --   constructors @(,)@ etc, possibly boxed @(\#,\#)@
     | Cons l                -- ^ list data constructor @(:)@
     | UnboxedSingleCon l    -- ^ unboxed singleton tuple constructor @(\# \#)@
+    | ExprHole l            -- ^ An expression hole _
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | This type is used to represent qualified variables, and also
@@ -273,23 +276,23 @@ data Decl l
      -- ^ A type family declaration
      | ClosedTypeFamDecl  l (DeclHead l) (Maybe (ResultSig l)) (Maybe (InjectivityInfo l)) [TypeEqn l]
      -- ^ A closed type family declaration
-     | DataDecl     l (DataOrNew l) (Maybe (Context l)) (DeclHead l)                  [QualConDecl l] (Maybe (Deriving l))
+     | DataDecl     l (DataOrNew l) (Maybe (Context l)) (DeclHead l)                  [QualConDecl l] [Deriving l]
      -- ^ A data OR newtype declaration
-     | GDataDecl    l (DataOrNew l) (Maybe (Context l)) (DeclHead l) (Maybe (Kind l)) [GadtDecl l]    (Maybe (Deriving l))
+     | GDataDecl    l (DataOrNew l) (Maybe (Context l)) (DeclHead l) (Maybe (Kind l)) [GadtDecl l]    [Deriving l]
      -- ^ A data OR newtype declaration, GADT style
      | DataFamDecl  l {-data-}      (Maybe (Context l)) (DeclHead l) (Maybe (ResultSig l))
      -- ^ A data family declaration
      | TypeInsDecl  l (Type l) (Type l)
      -- ^ A type family instance declaration
-     | DataInsDecl  l (DataOrNew l) (Type l)                  [QualConDecl l] (Maybe (Deriving l))
+     | DataInsDecl  l (DataOrNew l) (Type l)                  [QualConDecl l] [Deriving l]
      -- ^ A data family instance declaration
-     | GDataInsDecl l (DataOrNew l) (Type l) (Maybe (Kind l)) [GadtDecl l]    (Maybe (Deriving l))
+     | GDataInsDecl l (DataOrNew l) (Type l) (Maybe (Kind l)) [GadtDecl l]    [Deriving l]
      -- ^ A data family instance declaration, GADT style
      | ClassDecl    l (Maybe (Context l)) (DeclHead l) [FunDep l] (Maybe [ClassDecl l])
      -- ^ A declaration of a type class
      | InstDecl     l (Maybe (Overlap l)) (InstRule l) (Maybe [InstDecl l])
      -- ^ An declaration of a type class instance
-     | DerivDecl    l (Maybe (Overlap l)) (InstRule l)
+     | DerivDecl    l (Maybe (DerivStrategy l)) (Maybe (Overlap l)) (InstRule l)
      -- ^ A standalone deriving declaration
      | InfixDecl    l (Assoc l) (Maybe Int) [Op l]
      -- ^ A declaration of operator fixity
@@ -299,7 +302,7 @@ data Decl l
      -- ^ A Template Haskell splicing declaration
      | TypeSig      l [Name l] (Type l)
      -- ^ A type signature declaration
-     | PatSynSig    l (Name l) (Maybe [TyVarBind l]) (Maybe (Context l)) (Maybe (Context l)) (Type l)
+     | PatSynSig    l [Name l] (Maybe [TyVarBind l]) (Maybe (Context l)) (Maybe (Context l)) (Type l)
      -- ^ A pattern synonym signature declation
      | FunBind      l [Match l]
      -- ^ A set of function binding clauses
@@ -333,6 +336,8 @@ data Decl l
      -- ^ A MINIMAL pragma
      | RoleAnnotDecl    l (QName l) [Role l]
      -- ^ A role annotation
+     | CompletePragma l [Name l] (Maybe (QName l))
+     -- ^ A COMPLETE pragma
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 data  PatternSynDirection l =
@@ -476,7 +481,17 @@ data InstHead l
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | A deriving clause following a data type declaration.
-data Deriving l = Deriving l [InstRule l]
+data Deriving l = Deriving l (Maybe (DerivStrategy l)) [InstRule l]
+  deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
+
+-- | Which technique the user explicitly requested when deriving an instance.
+data DerivStrategy l
+  = DerivStock l    -- ^ GHC's \"standard\" strategy, which is to implement a
+                    --   custom instance for the data type. This only works for
+                    --   certain types that GHC knows about (e.g., 'Eq', 'Show',
+                    --   'Functor' when @-XDeriveFunctor@ is enabled, etc.)
+  | DerivAnyclass l -- ^ @-XDeriveAnyClass@
+  | DerivNewtype l  -- ^ @-XGeneralizedNewtypeDeriving@
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | A binding group inside a @let@ or @where@ clause.
@@ -567,9 +582,9 @@ data InstDecl l
             -- ^ ordinary declaration
     | InsType   l (Type l) (Type l)
             -- ^ an associated type definition
-    | InsData   l (DataOrNew l) (Type l) [QualConDecl l] (Maybe (Deriving l))
+    | InsData   l (DataOrNew l) (Type l) [QualConDecl l] [Deriving l]
             -- ^ an associated data type implementation
-    | InsGData  l (DataOrNew l) (Type l) (Maybe (Kind l)) [GadtDecl l] (Maybe (Deriving l))
+    | InsGData  l (DataOrNew l) (Type l) (Maybe (Kind l)) [GadtDecl l] [Deriving l]
             -- ^ an associated data type implemented using GADT style
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
@@ -612,13 +627,15 @@ data Type l
         (Type l)                                -- ^ qualified type
      | TyFun   l (Type l) (Type l)              -- ^ function type
      | TyTuple l Boxed [Type l]                 -- ^ tuple type, possibly boxed
+     | TyUnboxedSum l [Type l]                  -- ^ unboxed tuple type
      | TyList  l (Type l)                       -- ^ list syntax, e.g. [a], as opposed to [] a
      | TyParArray  l (Type l)                   -- ^ parallel array syntax, e.g. [:a:]
      | TyApp   l (Type l) (Type l)              -- ^ application of a type constructor
      | TyVar   l (Name l)                       -- ^ type variable
      | TyCon   l (QName l)                      -- ^ named type or type constructor
      | TyParen l (Type l)                       -- ^ type surrounded by parentheses
-     | TyInfix l (Type l) (QName l) (Type l)    -- ^ infix type constructor
+     | TyInfix l (Type l) (MaybePromotedName l)
+                          (Type l)              -- ^ infix type constructor
      | TyKind  l (Type l) (Kind l)              -- ^ type with explicit kind signature
      | TyPromoted l (Promoted l)                -- ^ @'K@, a promoted data type (-XDataKinds).
      | TyEquals l (Type l) (Type l)             -- ^ type equality predicate enabled by ConstraintKinds
@@ -626,6 +643,9 @@ data Type l
      | TyBang l (BangType l) (Unpackedness l) (Type l)           -- ^ Strict type marked with \"@!@\" or type marked with UNPACK pragma.
      | TyWildCard l (Maybe (Name l))            -- ^ Either an anonymous of named type wildcard
      | TyQuasiQuote l String String             -- ^ @[$/name/| /string/ |]@
+  deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
+
+data MaybePromotedName l = PromotedName l (QName l) | UnpromotedName l (QName l)
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | Bools here are True if there was a leading quote which may be
@@ -731,6 +751,7 @@ data Exp l
                                             --   should be an expression.
     | MDo l [Stmt l]                        -- ^ @mdo@-expression
     | Tuple l Boxed [Exp l]                 -- ^ tuple expression
+    | UnboxedSum l Int Int (Exp l)          -- ^ unboxed sum
     | TupleSection l Boxed [Maybe (Exp l)]  -- ^ tuple section expression, e.g. @(,,3)@
     | List l [Exp l]                        -- ^ list expression
     | ParArray l [Exp l]                    -- ^ parallel array expression
@@ -791,8 +812,6 @@ data Exp l
 -- LambdaCase
     | LCase l [Alt l]                       -- ^ @\case@ /alts/
 
--- Holes
-    | ExprHole l                            -- ^ Expression hole
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
 -- | The name of an xml element or attribute,
@@ -856,6 +875,9 @@ data Tool = GHC | HUGS | NHC98 | YHC | HADDOCK | UnknownTool String
 data Overlap l
     = NoOverlap l   -- ^ NO_OVERLAP pragma
     | Overlap l     -- ^ OVERLAP pragma
+    | Overlapping l
+    | Overlaps l
+    | Overlappable l
     | Incoherent l  -- ^ INCOHERENT pragma
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
 
@@ -892,6 +914,7 @@ data Pat l
     | PInfixApp l (Pat l) (QName l) (Pat l) -- ^ pattern with an infix data constructor
     | PApp l (QName l) [Pat l]              -- ^ data constructor and argument patterns
     | PTuple l Boxed [Pat l]                -- ^ tuple pattern
+    | PUnboxedSum l Int Int (Pat l)         -- ^ unboxed sum
     | PList l [Pat l]                       -- ^ list pattern
     | PParen l (Pat l)                      -- ^ parenthesized pattern
     | PRec l (QName l) [PatField l]         -- ^ labelled pattern, record style
@@ -908,6 +931,7 @@ data Pat l
     | PXPcdata l String                     -- ^ XML PCDATA pattern
     | PXPatTag l (Pat l)                    -- ^ XML embedded pattern
     | PXRPats  l [RPat l]                   -- ^ XML regular list pattern
+    | PSplice l (Splice l)                  -- ^ template haskell splice pattern
     | PQuasiQuote l String String           -- ^ quasi quote pattern: @[$/name/| /string/ |]@
     | PBangPat l (Pat l)                    -- ^ strict (bang) pattern: @f !x = ...@
   deriving (Eq,Ord,Show,Typeable,Data,Foldable,Traversable,Functor,Generic)
@@ -1023,10 +1047,13 @@ bang_name      l = Symbol l "!"
 dot_name       l = Symbol l "."
 star_name      l = Symbol l "*"
 
+hole_name :: l -> QName l
+hole_name      l = Special l (ExprHole l)
+
 export_name, safe_name, unsafe_name, interruptible_name, threadsafe_name,
   stdcall_name, ccall_name, cplusplus_name, dotnet_name,
   jvm_name, js_name, javascript_name, capi_name, forall_name,
-  family_name, role_name :: l -> Name l
+  family_name, role_name, stock_name, anyclass_name :: l -> Name l
 export_name     l = Ident l "export"
 safe_name       l = Ident l "safe"
 unsafe_name     l = Ident l "unsafe"
@@ -1043,6 +1070,8 @@ capi_name       l = Ident l "capi"
 forall_name     l = Ident l "forall"
 family_name     l = Ident l "family"
 role_name       l = Ident l "role"
+stock_name      l = Ident l "stock"
+anyclass_name   l = Ident l "anyclass"
 
 unit_tycon_name, fun_tycon_name, list_tycon_name, unboxed_singleton_tycon_name :: l -> QName l
 unit_tycon_name l = unit_con_name l
@@ -1093,6 +1122,7 @@ instance Annotated SpecialCon where
         TupleCon l _ _  -> l
         Cons l      -> l
         UnboxedSingleCon l  -> l
+        ExprHole l  -> l
     amap = fmap
 
 instance Annotated QName where
@@ -1216,8 +1246,14 @@ instance Annotated Assoc where
     amap = fmap
 
 instance Annotated Deriving where
-    ann (Deriving l _)      = l
-    amap f (Deriving l ihs) = Deriving (f l) ihs
+    ann (Deriving l _ _)        = l
+    amap f (Deriving l mds ihs) = Deriving (f l) mds ihs
+
+instance Annotated DerivStrategy where
+    ann (DerivStock l)    = l
+    ann (DerivAnyclass l) = l
+    ann (DerivNewtype l)  = l
+    amap = fmap
 
 instance Annotated TypeEqn where
     ann (TypeEqn l _ _) = l
@@ -1247,7 +1283,7 @@ instance Annotated Decl where
         GDataInsDecl l _ _ _ _ _        -> l
         ClassDecl    l _ _ _ _          -> l
         InstDecl     l _ _ _            -> l
-        DerivDecl    l _ _              -> l
+        DerivDecl    l _ _ _            -> l
         InfixDecl    l _ _ _            -> l
         DefaultDecl  l _                -> l
         SpliceDecl   l _                -> l
@@ -1269,6 +1305,7 @@ instance Annotated Decl where
         MinimalPragma    l _            -> l
         RoleAnnotDecl    l _ _          -> l
         PatSyn           l _ _ _        -> l
+        CompletePragma l _ _            -> l
     amap f decl = case decl of
         TypeDecl     l dh t      -> TypeDecl    (f l) dh t
         TypeFamDecl  l dh mk mi  -> TypeFamDecl (f l) dh mk mi
@@ -1283,7 +1320,7 @@ instance Annotated Decl where
         GDataInsDecl l dn t mk gds ders  -> GDataInsDecl (f l) dn t mk gds ders
         ClassDecl    l mcx dh fds cds    -> ClassDecl (f l) mcx dh fds cds
         InstDecl     l mo ih ids         -> InstDecl (f l) mo ih ids
-        DerivDecl    l mo ih             -> DerivDecl (f l) mo ih
+        DerivDecl    l mds mo ih         -> DerivDecl (f l) mds mo ih
         InfixDecl    l a k ops           -> InfixDecl (f l) a k ops
         DefaultDecl  l ts                -> DefaultDecl (f l) ts
         SpliceDecl   l sp                -> SpliceDecl (f l) sp
@@ -1305,6 +1342,7 @@ instance Annotated Decl where
         MinimalPragma    l b             -> MinimalPragma (f l) b
         RoleAnnotDecl    l t rs          -> RoleAnnotDecl (f l) t rs
         PatSyn           l p r d         -> PatSyn (f l) p r d
+        CompletePragma   l cs ty         -> CompletePragma (f l) cs ty
 
 instance Annotated Role where
     ann r = case r of
@@ -1462,6 +1500,7 @@ instance Annotated Type where
       TyForall l _ _ _              -> l
       TyFun   l _ _                 -> l
       TyTuple l _ _                 -> l
+      TyUnboxedSum l _              -> l
       TyList  l _                   -> l
       TyParArray  l _               -> l
       TyApp   l _ _                 -> l
@@ -1480,6 +1519,7 @@ instance Annotated Type where
       TyForall l mtvs mcx t         -> TyForall (f l) mtvs mcx t
       TyFun   l t1' t2              -> TyFun (f l) t1' t2
       TyTuple l b ts                -> TyTuple (f l) b ts
+      TyUnboxedSum l s              -> TyUnboxedSum (f l) s
       TyList  l t                   -> TyList (f l) t
       TyParArray  l t               -> TyParArray (f l) t
       TyApp   l t1' t2              -> TyApp (f l) t1' t2
@@ -1494,6 +1534,14 @@ instance Annotated Type where
       TyBang l b u t                  -> TyBang (f l) b u t
       TyWildCard l n                -> TyWildCard (f l) n
       TyQuasiQuote l n s            -> TyQuasiQuote (f l) n s
+
+instance Annotated MaybePromotedName where
+  ann t = case t of
+    PromotedName l _ -> l
+    UnpromotedName l _ -> l
+  amap f tl =  case tl of
+    PromotedName l q -> PromotedName (f l)     q
+    UnpromotedName l q -> UnpromotedName (f l) q
 
 instance Annotated TyVarBind where
     ann (KindedVar   l _ _) = l
@@ -1585,6 +1633,7 @@ instance Annotated Exp where
         Do l _                 -> l
         MDo l _                -> l
         Tuple l _ _            -> l
+        UnboxedSum l _ _ _     -> l
         TupleSection l _ _     -> l
         List l _               -> l
         ParArray l _           -> l
@@ -1627,7 +1676,6 @@ instance Annotated Exp where
         RightArrHighApp l _ _  -> l
 
         LCase l _              -> l
-        ExprHole l             -> l
 
     amap f e1 = case e1 of
         Var l qn        -> Var (f l) qn
@@ -1645,6 +1693,7 @@ instance Annotated Exp where
         Do l ss         -> Do (f l) ss
         MDo l ss        -> MDo (f l) ss
         Tuple l bx es   -> Tuple (f l) bx es
+        UnboxedSum l b a es -> UnboxedSum (f l) b a es
         TupleSection l bx mes -> TupleSection (f l) bx mes
         List l es       -> List (f l) es
         ParArray l es   -> ParArray (f l) es
@@ -1688,7 +1737,6 @@ instance Annotated Exp where
 
         LCase l alts -> LCase (f l) alts
         MultiIf l alts -> MultiIf (f l) alts
-        ExprHole l      -> ExprHole (f l)
 
 
 instance Annotated XName where
@@ -1744,6 +1792,9 @@ instance Annotated ModulePragma where
 instance Annotated Overlap where
     ann (NoOverlap l)  = l
     ann (Overlap l)    = l
+    ann (Overlaps l)   = l
+    ann (Overlappable l) = l
+    ann (Overlapping l)  = l
     ann (Incoherent l) = l
     amap = fmap
 
@@ -1775,6 +1826,7 @@ instance Annotated Pat where
       PInfixApp l _ _ _ -> l
       PApp l _ _        -> l
       PTuple l _ _      -> l
+      PUnboxedSum l _ _ _ -> l
       PList l _         -> l
       PParen l _        -> l
       PRec l _ _        -> l
@@ -1789,6 +1841,7 @@ instance Annotated Pat where
       PXPcdata l _      -> l
       PXPatTag l _      -> l
       PXRPats  l _      -> l
+      PSplice l _       -> l
       PQuasiQuote l _ _ -> l
       PBangPat l _      -> l
     amap f p1 = case p1 of
@@ -1798,6 +1851,7 @@ instance Annotated Pat where
       PInfixApp l pa qn pb  -> PInfixApp (f l) pa qn pb
       PApp l qn ps      -> PApp (f l) qn ps
       PTuple l bx ps    -> PTuple (f l) bx ps
+      PUnboxedSum l b a ps -> PUnboxedSum (f l) b a ps
       PList l ps        -> PList (f l) ps
       PParen l p        -> PParen (f l) p
       PRec l qn pfs     -> PRec (f l) qn pfs
@@ -1812,6 +1866,7 @@ instance Annotated Pat where
       PXPcdata l s      -> PXPcdata (f l) s
       PXPatTag l p      -> PXPatTag (f l) p
       PXRPats  l rps    -> PXRPats  (f l) rps
+      PSplice l sp      -> PSplice (f l) sp
       PQuasiQuote l sn st   -> PQuasiQuote (f l) sn st
       PBangPat l p          -> PBangPat (f l) p
 
